@@ -36,26 +36,51 @@ export default function App() {
   const [err, setErr] = useState<string | null>(null);
 
   async function onReview() {
+    const API_BASE = import.meta.env.VITE_API_BASE_URL as string | undefined;
+    console.log("VITE_API_BASE_URL =", API_BASE);
+
     setErr(null);
     setRes(null);
     setLoading(true);
 
     try {
-      const r = await fetch("/api/review", {
+      if (!API_BASE || API_BASE.trim().length === 0) {
+        throw new Error(
+          "Missing VITE_API_BASE_URL. Set it in Vercel (Production) and redeploy. For local dev, add frontend/.env.local."
+        );
+      }
+
+      const r = await fetch(`${API_BASE}/api/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ context, story, acceptanceCriteria }),
       });
 
-      // Even if backend returns 500, we still try to read JSON for useful error details
-      const json = (await r.json()) as ReviewResponse;
+      // Read raw first so we don't crash on non-JSON responses (HTML, text, proxies, etc.)
+      const contentType = r.headers.get("content-type") || "";
+      const raw = await r.text();
+
+      let json: ReviewResponse | null = null;
+      if (contentType.includes("application/json")) {
+        try {
+          json = JSON.parse(raw) as ReviewResponse;
+        } catch {
+          // leave json as null, handled below
+        }
+      }
 
       if (!r.ok) {
         const msg =
           json?.error?.message
             ? `Backend error: ${r.status} — ${json.error.message}`
-            : `Backend error: ${r.status}`;
+            : `Backend error: ${r.status} — ${raw.slice(0, 200)}`;
         throw new Error(msg);
+      }
+
+      if (!json) {
+        throw new Error(
+          `Expected JSON but got: ${contentType || "(no content-type)"} — ${raw.slice(0, 200)}`
+        );
       }
 
       setRes(json);
