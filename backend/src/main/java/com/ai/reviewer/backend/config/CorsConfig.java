@@ -16,11 +16,13 @@ public class CorsConfig {
         registry.addMapping("/api/**")
             .allowedOrigins(
                 "http://localhost:5173",
-                "https://YOUR-VERCEL-APP.vercel.app"
+                "https://ai-reviewer-six.vercel.app",
+                "https://ai-reviewer-lug2ptqu2-vidya-peruris-projects.vercel.app",
+                "https://ai-reviewer-git-main-vidya-peruris-projects.vercel.app"
             )
             .allowedMethods("GET", "POST", "OPTIONS")
             .allowedHeaders("*")
-			.maxAge(3600);
+            .maxAge(3600);
       }
     };
   }
