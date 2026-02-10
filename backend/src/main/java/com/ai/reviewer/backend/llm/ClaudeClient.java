@@ -31,7 +31,7 @@ public class ClaudeClient {
     // Safe default model from Anthropic examples (you can change later)
     this.model = Optional.ofNullable(System.getenv("ANTHROPIC_MODEL"))
         .filter(s -> !s.isBlank())
-        .orElse("claude-3-5-sonnet-latest");
+        .orElse("claude-3-5-sonnet-20241022");
   }
 
   /**
