@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from "@clerk/clerk-react";
+import { SignedOut, SignInButton, useAuth } from "@clerk/clerk-react";
 
 type ReviewResponse = {
   rating: {
