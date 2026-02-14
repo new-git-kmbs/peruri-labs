@@ -116,9 +116,7 @@ export default function AiReviewerPage() {
           </SignInButton>
         </SignedOut>
 
-        <SignedIn>
-          <UserButton afterSignOutUrl="/" />
-        </SignedIn>
+
       </div>
 
       <div style={{ opacity: 0.8, marginBottom: 16 }}>
