@@ -1,3 +1,4 @@
+import React from "react";
 import { useNavigate } from "react-router-dom";
 
 export default function DashboardPage() {
@@ -22,13 +23,6 @@ export default function DashboardPage() {
     marginTop: 12,
     fontSize: 13,
     opacity: 0.65,
-  };
-
-  const dashedCardStyle: React.CSSProperties = {
-    border: "1px dashed #d1d5db",
-    borderRadius: 14,
-    padding: 16,
-    opacity: 0.7,
   };
 
   return (
@@ -97,8 +91,8 @@ export default function DashboardPage() {
             Coming soon: Portfolio Analyzer · Fund Comparison · Reverse CAGR
           </div>
         </div>
-        
       </div>
     </div>
   );
 }
+/*dummy commit to force deploy not sure why it is failing to pick latest changes*/
