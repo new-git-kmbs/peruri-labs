@@ -1,12 +1,39 @@
 import { useState } from "react";
 import { useAuth } from "@clerk/clerk-react";
 
+type AiMerchant = {
+  merchant: string;
+  amount: number;
+};
+
+type AiCategory = {
+  category: string;
+  total: number;
+  merchants: AiMerchant[];
+};
+
+type AiResult = {
+  totalExpenses: number;
+  billPaymentsTotal?: number; // NEW
+  categories: AiCategory[];
+  notes?: string;
+};
+
+
+type UploadAiResponse = {
+  ok: boolean;
+  filename: string;
+  transactionCount: number;
+  ai: AiResult;
+};
+
 export default function SpendingIntelligencePage() {
   const { getToken } = useAuth();
 
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [result, setResult] = useState<UploadAiResponse | null>(null);
 
   async function handleUpload() {
     const API_BASE = import.meta.env.VITE_API_BASE_URL as string | undefined;
@@ -24,6 +51,7 @@ export default function SpendingIntelligencePage() {
     try {
       setLoading(true);
       setMessage(null);
+      setResult(null);
 
       const token = await getToken();
       if (!token) {
@@ -41,19 +69,31 @@ export default function SpendingIntelligencePage() {
         body: formData,
       });
 
-      const text = await response.text();
+      const contentType = response.headers.get("content-type") || "";
+      const isJson = contentType.includes("application/json");
+      const data: any = isJson ? await response.json() : await response.text();
 
       if (!response.ok) {
-        throw new Error(text || "Upload failed.");
+        const errMsg =
+          typeof data === "string" ? data : data?.error || JSON.stringify(data);
+        throw new Error(errMsg || "Upload failed.");
       }
 
-      setMessage("File uploaded successfully. Processing complete.");
+      setResult(data as UploadAiResponse);
+	//  console.log("UPLOAD RESPONSE:", data);
+
+      setMessage("File uploaded successfully. AI analysis complete.");
     } catch (err: any) {
       setMessage(err?.message ?? "Unexpected error occurred.");
     } finally {
       setLoading(false);
     }
   }
+
+  const hasAi =
+    !!result?.ai &&
+    Array.isArray(result.ai.categories) &&
+    result.ai.categories.length > 0;
 
   return (
     <div
@@ -66,9 +106,10 @@ export default function SpendingIntelligencePage() {
     >
       <h1 style={{ marginBottom: 4 }}>AI Spending Intelligence</h1>
 
-      <div style={{ opacity: 0.8, marginBottom: 20 }}>
-        Upload your bank export (CSV or Excel) to receive AI-powered monthly
-        summaries, category breakdowns, and savings insights.
+      <div style={{ opacity: 0.8, marginBottom: 20, lineHeight: 1.5 }}>
+        Upload your transaction export to generate an AI-powered breakdown of
+        your spending — categorized totals, top merchants, and intelligent
+        insights about where your money is going.
       </div>
 
       {/* Upload Section */}
@@ -81,7 +122,7 @@ export default function SpendingIntelligencePage() {
         }}
       >
         <div style={{ fontWeight: 700, marginBottom: 10 }}>
-          Upload Transactions File
+          Upload Transaction File
         </div>
 
         <input
@@ -92,16 +133,32 @@ export default function SpendingIntelligencePage() {
               setFile(e.target.files[0]);
             }
           }}
-          style={{ marginBottom: 12 }}
+          style={{ marginBottom: 8 }}
         />
+
+        <div
+          style={{
+            fontSize: 12,
+            opacity: 0.75,
+            marginBottom: 14,
+            lineHeight: 1.4,
+          }}
+        >
+          Supported right now: <b>CSV</b> exports (recommended). Basic Excel
+          support is evolving.
+          <br />
+          Expected columns: <b>Date</b>, <b>Description/Merchant</b>,{" "}
+          <b>Amount</b> (column names may vary by bank).
+        </div>
 
         <div>
           <button
             onClick={handleUpload}
-            disabled={loading}
+            disabled={loading || !file}
             style={{
               padding: "8px 14px",
               cursor: loading ? "not-allowed" : "pointer",
+              opacity: loading || !file ? 0.7 : 1,
             }}
           >
             {loading ? "Uploading..." : "Upload & Analyze"}
@@ -112,7 +169,10 @@ export default function SpendingIntelligencePage() {
           <div
             style={{
               marginTop: 12,
-              color: message.includes("success") ? "green" : "crimson",
+              color: message.toLowerCase().includes("complete") ||
+                message.toLowerCase().includes("success")
+                ? "green"
+                : "crimson",
             }}
           >
             {message}
@@ -120,30 +180,166 @@ export default function SpendingIntelligencePage() {
         )}
       </div>
 
-      {/* Placeholder Summary Section */}
-      <div
-        style={{
-          border: "1px solid #eee",
-          borderRadius: 12,
-          padding: 18,
-          opacity: 0.7,
-        }}
-      >
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>
-          Monthly Summary (Coming Soon)
-        </div>
+      {/* Results */}
+      {!hasAi ? (
+        <div
+          style={{
+            border: "1px solid #eee",
+            borderRadius: 12,
+            padding: 18,
+            opacity: 0.85,
+          }}
+        >
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>
+            Spending Synopsis
+          </div>
 
-        <div>
-          After upload, you will see:
-          <ul style={{ marginTop: 8 }}>
-            <li>Total spending</li>
-            <li>Category breakdown</li>
-            <li>Top merchants</li>
-            <li>Month-over-month comparison</li>
-            <li>AI-generated insights & recommendations</li>
-          </ul>
+          <div style={{ lineHeight: 1.5 }}>
+            Once uploaded, AI will analyze your transactions and generate a
+            structured breakdown of your expenses.
+          </div>
+
+          <div style={{ marginTop: 10 }}>
+            You’ll receive:
+            <ul style={{ marginTop: 8 }}>
+              <li>
+                Totals by category (Subscriptions, Dining, Groceries, Bills,
+                Shopping, Transport, etc.)
+              </li>
+              <li>Top merchants within each category</li>
+              <li>
+                AI-generated notes highlighting patterns, recurring charges,
+                and savings opportunities
+              </li>
+            </ul>
+          </div>
         </div>
+      ) : (
+        <div style={{ marginTop: 6 }}>
+          {/* Top stats */}
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+   <Stat label="Transactions Used" value={result!.transactionCount} />
+
+  <Stat
+    label="Total Expenses"
+    value={Number(result!.ai.totalExpenses)}
+    money
+  />
+   {typeof result!.ai.billPaymentsTotal === "number" && (
+    <Stat
+      label="Bill Payment"
+      value={Number(result!.ai.billPaymentsTotal)}
+      money
+    />
+  )}
+</div>
+
+
+          {/* Categories */}
+          <div
+            style={{
+              marginTop: 16,
+              border: "1px solid #eee",
+              borderRadius: 12,
+              padding: 18,
+            }}
+          >
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>
+              Spending by Category
+            </div>
+
+            {result!.ai.categories.map((c) => (
+              <div key={c.category} style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 900 }}>
+                  {c.category} — {fmtMoney(Number(c.total))}
+                </div>
+
+                <div style={{ marginTop: 8 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th style={th}>Merchant</th>
+                        <th style={th}>Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(c.merchants || []).map((m) => (
+                        <tr key={`${c.category}-${m.merchant}`}>
+                          <td style={td}>{m.merchant}</td>
+                          <td style={td}>
+                            {fmtMoney(Number(m.amount))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+
+            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+              Source file: {result!.filename}
+            </div>
+
+            {result!.ai.notes && (
+              <div style={{ marginTop: 14, fontSize: 13, opacity: 0.9 }}>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>
+                  AI Insights
+                </div>
+                <div style={{ whiteSpace: "pre-wrap" }}>
+                  {result!.ai.notes}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  money,
+}: {
+  label: string;
+  value: number;
+  money?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        padding: 14,
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+        minWidth: 220,
+      }}
+    >
+      <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 900 }}>
+        {money ? fmtMoney(value) : value}
       </div>
     </div>
   );
+}
+
+const th: React.CSSProperties = {
+  textAlign: "left",
+  borderBottom: "1px solid #eee",
+  padding: "10px 8px",
+  fontSize: 13,
+  opacity: 0.8,
+};
+
+const td: React.CSSProperties = {
+  borderBottom: "1px solid #f1f1f1",
+  padding: "10px 8px",
+};
+
+function fmtMoney(n: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(n);
 }
