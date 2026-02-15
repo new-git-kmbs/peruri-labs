@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useAuth } from "@clerk/clerk-react";
 
 type AiMerchant = {
@@ -14,11 +14,10 @@ type AiCategory = {
 
 type AiResult = {
   totalExpenses: number;
-  billPaymentsTotal?: number; // NEW
+  billPaymentsTotal?: number;
   categories: AiCategory[];
   notes?: string;
 };
-
 
 type UploadAiResponse = {
   ok: boolean;
@@ -30,16 +29,49 @@ type UploadAiResponse = {
 export default function SpendingIntelligencePage() {
   const { getToken } = useAuth();
 
-  const [file, setFile] = useState<File | null>(null);
+  // CHANGED: support multiple files + incremental selection
+  const [files, setFiles] = useState<File[]>([]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [result, setResult] = useState<UploadAiResponse | null>(null);
 
+  function addFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+
+    const incoming = Array.from(fileList);
+
+    setFiles((prev) => {
+      // Client-side dedup so user can select same file in multiple picks without duplicates.
+      const seen = new Set(prev.map((f) => `${f.name}|${f.size}|${f.lastModified}`));
+      const merged = [...prev];
+
+      for (const f of incoming) {
+        const key = `${f.name}|${f.size}|${f.lastModified}`;
+        if (!seen.has(key)) merged.push(f);
+      }
+      return merged;
+    });
+
+    // Reset input so selecting the same file again triggers onChange.
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function removeFile(idx: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function clearFiles() {
+    setFiles([]);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
   async function handleUpload() {
     const API_BASE = import.meta.env.VITE_API_BASE_URL as string | undefined;
 
-    if (!file) {
-      setMessage("Please select a file first.");
+    if (!files || files.length === 0) {
+      setMessage("Please select at least one file first.");
       return;
     }
 
@@ -59,7 +91,9 @@ export default function SpendingIntelligencePage() {
       }
 
       const formData = new FormData();
-      formData.append("file", file);
+
+      // CHANGED: send all selected files; backend should accept @RequestParam("files") List<MultipartFile>
+      files.forEach((f) => formData.append("files", f));
 
       const response = await fetch(`${API_BASE}/api/transactions/upload`, {
         method: "POST",
@@ -80,7 +114,9 @@ export default function SpendingIntelligencePage() {
       }
 
       setResult(data as UploadAiResponse);
-	//  console.log("UPLOAD RESPONSE:", data);
+
+      // Optional: clear selected files after success
+      clearFiles();
 
       setMessage("File uploaded successfully. AI analysis complete.");
     } catch (err: any) {
@@ -122,19 +158,68 @@ export default function SpendingIntelligencePage() {
         }}
       >
         <div style={{ fontWeight: 700, marginBottom: 10 }}>
-          Upload Transaction File
+          Upload Transaction File(s)
         </div>
 
         <input
+          ref={inputRef}
           type="file"
+          multiple
           accept=".csv,.xlsx,.xls"
-          onChange={(e) => {
-            if (e.target.files && e.target.files.length > 0) {
-              setFile(e.target.files[0]);
-            }
-          }}
+          onChange={(e) => addFiles(e.target.files)}
           style={{ marginBottom: 8 }}
         />
+
+        {files.length > 0 && (
+          <div
+            style={{
+              border: "1px solid #eee",
+              borderRadius: 10,
+              padding: 12,
+              marginTop: 10,
+              marginBottom: 14,
+            }}
+          >
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>
+              Selected files: {files.length}
+            </div>
+
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {files.map((f, idx) => (
+                <li key={`${f.name}|${f.size}|${f.lastModified}`}>
+                  {f.name}{" "}
+                  <button
+                    type="button"
+                    onClick={() => removeFile(idx)}
+                    disabled={loading}
+                    style={{
+                      marginLeft: 8,
+                      cursor: loading ? "not-allowed" : "pointer",
+                      opacity: loading ? 0.6 : 1,
+                    }}
+                  >
+                    remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <div style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                onClick={clearFiles}
+                disabled={loading}
+                style={{
+                  padding: "6px 10px",
+                  cursor: loading ? "not-allowed" : "pointer",
+                  opacity: loading ? 0.7 : 1,
+                }}
+              >
+                Clear selection
+              </button>
+            </div>
+          </div>
+        )}
 
         <div
           style={{
@@ -149,16 +234,19 @@ export default function SpendingIntelligencePage() {
           <br />
           Expected columns: <b>Date</b>, <b>Description/Merchant</b>,{" "}
           <b>Amount</b> (column names may vary by bank).
+          <br />
+          You can select multiple files at once, or add more files in multiple
+          picks — analysis runs only when you click <b>Upload & Analyze</b>.
         </div>
 
         <div>
           <button
             onClick={handleUpload}
-            disabled={loading || !file}
+            disabled={loading || files.length === 0}
             style={{
               padding: "8px 14px",
               cursor: loading ? "not-allowed" : "pointer",
-              opacity: loading || !file ? 0.7 : 1,
+              opacity: loading || files.length === 0 ? 0.7 : 1,
             }}
           >
             {loading ? "Uploading..." : "Upload & Analyze"}
@@ -169,10 +257,11 @@ export default function SpendingIntelligencePage() {
           <div
             style={{
               marginTop: 12,
-              color: message.toLowerCase().includes("complete") ||
+              color:
+                message.toLowerCase().includes("complete") ||
                 message.toLowerCase().includes("success")
-                ? "green"
-                : "crimson",
+                  ? "green"
+                  : "crimson",
             }}
           >
             {message}
@@ -208,8 +297,8 @@ export default function SpendingIntelligencePage() {
               </li>
               <li>Top merchants within each category</li>
               <li>
-                AI-generated notes highlighting patterns, recurring charges,
-                and savings opportunities
+                AI-generated notes highlighting patterns, recurring charges, and
+                savings opportunities
               </li>
             </ul>
           </div>
@@ -218,22 +307,22 @@ export default function SpendingIntelligencePage() {
         <div style={{ marginTop: 6 }}>
           {/* Top stats */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-   <Stat label="Transactions Used" value={result!.transactionCount} />
+            <Stat label="Transactions Used" value={result!.transactionCount} />
 
-  <Stat
-    label="Total Expenses"
-    value={Number(result!.ai.totalExpenses)}
-    money
-  />
-   {typeof result!.ai.billPaymentsTotal === "number" && (
-    <Stat
-      label="Bill Payment"
-      value={Number(result!.ai.billPaymentsTotal)}
-      money
-    />
-  )}
-</div>
+            <Stat
+              label="Total Expenses"
+              value={Number(result!.ai.totalExpenses)}
+              money
+            />
 
+            {typeof result!.ai.billPaymentsTotal === "number" && (
+              <Stat
+                label="Bill Payment"
+                value={Number(result!.ai.billPaymentsTotal)}
+                money
+              />
+            )}
+          </div>
 
           {/* Categories */}
           <div
@@ -266,9 +355,7 @@ export default function SpendingIntelligencePage() {
                       {(c.merchants || []).map((m) => (
                         <tr key={`${c.category}-${m.merchant}`}>
                           <td style={td}>{m.merchant}</td>
-                          <td style={td}>
-                            {fmtMoney(Number(m.amount))}
-                          </td>
+                          <td style={td}>{fmtMoney(Number(m.amount))}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -286,9 +373,7 @@ export default function SpendingIntelligencePage() {
                 <div style={{ fontWeight: 800, marginBottom: 4 }}>
                   AI Insights
                 </div>
-                <div style={{ whiteSpace: "pre-wrap" }}>
-                  {result!.ai.notes}
-                </div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{result!.ai.notes}</div>
               </div>
             )}
           </div>

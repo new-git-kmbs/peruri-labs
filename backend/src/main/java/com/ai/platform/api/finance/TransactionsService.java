@@ -37,15 +37,18 @@ public class TransactionsService {
     // Spring's RestClient (Spring 6 / Boot 3)
     private final RestClient restClient = RestClient.create();
 
-    public Map<String, Object> aiAnalyze(MultipartFile file) {
+    // Tune these if needed (keeps each LLM call safely small)
+    private static final int MAX_ITEMS_PER_LLM_CALL = 25;
+    private static final int MAX_TOTAL_ITEMS = 2000;
+
+    // CHANGED: multi-file entry point
+    public Map<String, Object> aiAnalyze(List<MultipartFile> files) {
         BigDecimal billPaymentsTotal = BigDecimal.ZERO;
 
-        List<Txn> txns = parseCsv(file);
+        // Parse + merge transactions from all files
+        List<Txn> txns = parseCsv(files);
 
-        // Build payload for the LLM:
-        // - expense if amount < 0 (value = abs(amount))
-        // - refund if amount > 0 (value = amount)
-        // - exclude payments ("Payment - Thank you", etc.) BUT track them in billPaymentsTotal
+        // Build LLM items (exclude payments but track them)
         List<Map<String, Object>> items = new ArrayList<>();
         int id = 0;
 
@@ -57,7 +60,6 @@ public class TransactionsService {
 
             // Exclude payments (NOT spend, NOT refund), but track total
             if (isPayment(desc)) {
-                // Payments often show as negative on exports; abs() gives positive payment amount
                 if (amt.compareTo(BigDecimal.ZERO) < 0) {
                     billPaymentsTotal = billPaymentsTotal.add(amt.abs());
                 } else {
@@ -85,74 +87,105 @@ public class TransactionsService {
             m.put("kind", kind);        // "expense" or "refund"
             items.add(m);
 
-            // keep prompt size under control
-            if (items.size() >= 700) break;
+            // hard guardrail (avoid extreme uploads / too many calls)
+            if (items.size() >= MAX_TOTAL_ITEMS) break;
         }
 
         if (items.isEmpty()) {
             throw new IllegalArgumentException("No usable transactions found (after excluding payments).");
         }
 
-        String prompt = buildPrompt(items);
+        // CHANGED: chunk the LLM calls so we never exceed small token budgets
+        Map<Integer, String> txnIdToCategory = new HashMap<>();
+        String combinedNotes = null;
 
-        String llmText = callAnthropic(prompt);
+        List<List<Map<String, Object>>> chunks = chunkItems(items, MAX_ITEMS_PER_LLM_CALL);
 
-        // Parse AI JSON
-        Map<String, Object> aiJson = parseJsonObject(llmText);
+        int expectedTxnCount = items.size();
 
-        // Validate ids: no duplicates, and check for missing ids
-        List<Integer> missing = validateAndGetMissingTxnIds(aiJson, items.size());
+        for (int i = 0; i < chunks.size(); i++) {
+            List<Map<String, Object>> chunk = chunks.get(i);
 
-        // Retry ONCE if AI missed ids (common + fixable)
-        if (!missing.isEmpty()) {
-            String repairPrompt = buildRepairPrompt(llmText, missing, items.size());
-            String repairedText = callAnthropic(repairPrompt);
-            aiJson = parseJsonObject(repairedText);
+            String prompt = buildPrompt(chunk);
 
-            missing = validateAndGetMissingTxnIds(aiJson, items.size());
+            String llmText = callAnthropic(prompt);
+
+            Map<String, Object> aiJson = parseJsonObject(llmText);
+
+            // Validate ids for THIS chunk (not 1..N global)
+            Set<Integer> expectedIds = chunk.stream()
+                    .map(m -> toInt(m.get("id")))
+                    .collect(java.util.stream.Collectors.toSet());
+
+            List<Integer> missing = validateAndGetMissingTxnIds(aiJson, expectedIds);
+
+            // Retry ONCE if AI missed ids (common + fixable)
             if (!missing.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "AI did not assign all transactions exactly once. Missing ids: " + missing
-                );
+                String repairPrompt = buildRepairPrompt(llmText, missing, expectedIds);
+                String repairedText = callAnthropic(repairPrompt);
+                aiJson = parseJsonObject(repairedText);
+
+                missing = validateAndGetMissingTxnIds(aiJson, expectedIds);
+                if (!missing.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "AI did not assign all transactions exactly once (chunk " + (i + 1) + "). Missing ids: " + missing
+                    );
+                }
+            }
+
+            // Collect categories per txnId from this chunk
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> categories = (List<Map<String, Object>>) aiJson.get("categories");
+            if (categories == null) categories = new ArrayList<>();
+
+            for (Map<String, Object> c : categories) {
+                String cat = String.valueOf(c.get("category"));
+                List<Integer> txnIds = toIntList(c.get("txnIds"));
+                if (txnIds == null) continue;
+
+                for (Integer tid : txnIds) {
+                    if (tid == null) continue;
+                    // Ensure no duplicates across chunks (shouldn't happen because ids are global unique)
+                    if (txnIdToCategory.containsKey(tid)) {
+                        throw new IllegalArgumentException("AI duplicated transaction id across chunks: " + tid);
+                    }
+                    txnIdToCategory.put(tid, cat);
+                }
+            }
+
+            // Keep one short notes string (optional)
+            Object notesObj = aiJson.get("notes");
+            if (combinedNotes == null && notesObj instanceof String s && !s.isBlank()) {
+                combinedNotes = s.trim();
             }
         }
 
-        // Enforce rule: refunds must appear in Refunds category (deterministic safety)
+        // Ensure every txnId 1..expectedTxnCount got categorized
+        List<Integer> missingOverall = new ArrayList<>();
+        for (int tid = 1; tid <= expectedTxnCount; tid++) {
+            if (!txnIdToCategory.containsKey(tid)) missingOverall.add(tid);
+        }
+        if (!missingOverall.isEmpty()) {
+            throw new IllegalArgumentException("AI did not assign all transactions exactly once. Missing ids: " + missingOverall);
+        }
+
+        // Enforce rule: refunds must be Refunds category (deterministic safety)
         // and recompute totals/merchants deterministically from txnIds (no AI math drift).
         Map<Integer, Item> idToItem = buildIdToItem(items);
 
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> categories = (List<Map<String, Object>>) aiJson.get("categories");
-        if (categories == null) categories = new ArrayList<>();
-
-        // Build category->txnIds from AI, but we'll correct refunds routing
+        // Build category -> txnIds from the per-txn mapping
         Map<String, LinkedHashSet<Integer>> catToIds = new HashMap<>();
-        for (Map<String, Object> c : categories) {
-            String cat = String.valueOf(c.get("category"));
-            if (cat == null || cat.isBlank()) continue;
+        for (int tid = 1; tid <= expectedTxnCount; tid++) {
+            Item it = idToItem.get(tid);
+            if (it == null) continue;
 
-            List<Integer> txnIds = toIntList(c.get("txnIds"));
-            if (txnIds == null) txnIds = List.of();
+            String cat = txnIdToCategory.get(tid);
+            if (cat == null || cat.isBlank()) cat = "Other";
 
-            catToIds.putIfAbsent(cat, new LinkedHashSet<>());
-            for (Integer tid : txnIds) {
-                if (tid == null) continue;
-                catToIds.get(cat).add(tid);
-            }
-        }
+            // deterministic override: refunds always go to Refunds
+            if ("refund".equals(it.kind())) cat = "Refunds";
 
-        // Remove all refund txnIds from any category and put them into Refunds
-        LinkedHashSet<Integer> refunds = catToIds.computeIfAbsent("Refunds", k -> new LinkedHashSet<>());
-        for (Map.Entry<Integer, Item> e : idToItem.entrySet()) {
-            int tid = e.getKey();
-            Item it = e.getValue();
-            if ("refund".equals(it.kind())) {
-                // remove from all categories
-                for (LinkedHashSet<Integer> set : catToIds.values()) {
-                    set.remove(tid);
-                }
-                refunds.add(tid);
-            }
+            catToIds.computeIfAbsent(cat, k -> new LinkedHashSet<>()).add(tid);
         }
 
         // Now rebuild categories deterministically: totals + merchants from txnIds
@@ -170,7 +203,6 @@ public class TransactionsService {
                 if (it == null) continue;
 
                 total = total.add(it.amount());
-
                 merchantTotals.merge(it.merchant(), it.amount(), BigDecimal::add);
             }
 
@@ -201,9 +233,10 @@ public class TransactionsService {
             return tb.compareTo(ta);
         });
 
-        aiJson.put("categories", rebuiltCategories);
+        Map<String, Object> aiJsonOut = new HashMap<>();
+        aiJsonOut.put("categories", rebuiltCategories);
 
-        // Compute deterministic totals:
+        // Deterministic totals:
         BigDecimal grossSpend = items.stream()
                 .filter(m -> "expense".equals(String.valueOf(m.get("kind"))))
                 .map(m -> toBigDecimal(m.get("amount")))
@@ -216,23 +249,26 @@ public class TransactionsService {
 
         BigDecimal netSpend = grossSpend.subtract(refundsTotal);
 
-        // Keep totalExpenses as NET spend (spend after refunds)
-        aiJson.put("totalExpenses", netSpend);
+        aiJsonOut.put("totalExpenses", netSpend);
+        aiJsonOut.put("grossSpend", grossSpend);
+        aiJsonOut.put("refundsTotal", refundsTotal);
 
-        // Add helpful extras (frontend can ignore safely)
-        aiJson.put("grossSpend", grossSpend);
-        aiJson.put("refundsTotal", refundsTotal);
+        // include bill payment total so UI can show it at the top
+        aiJsonOut.put("billPaymentsTotal", billPaymentsTotal);
 
-        // IMPORTANT: include bill payment total so UI can show it at the top
-        aiJson.put("billPaymentsTotal", billPaymentsTotal);
+        if (combinedNotes != null) {
+            aiJsonOut.put("notes", combinedNotes);
+        }
 
         Map<String, Object> result = new HashMap<>();
         result.put("ok", true);
-        result.put("filename", file.getOriginalFilename());
+        result.put("filename", buildFilenameLabel(files));
         result.put("transactionCount", items.size());
-        result.put("ai", aiJson);
+        result.put("ai", aiJsonOut);
         return result;
     }
+
+    // ---------------- Prompt / LLM ----------------
 
     private String buildPrompt(List<Map<String, Object>> items) {
         String txnsJson;
@@ -242,6 +278,7 @@ public class TransactionsService {
             throw new IllegalArgumentException("Failed to serialize transactions for AI prompt.", e);
         }
 
+        // Note: ids in this chunk are global ids. Validation uses the set of ids present in this chunk.
         return """
 You are a financial categorization engine.
 
@@ -262,7 +299,7 @@ Allowed categories (use these exact strings):
 
 Rules (MUST follow all):
 - Use only the allowed categories.
-- CRITICAL: Each transaction id from 1..N must appear in EXACTLY ONE category. Never duplicate ids.
+- CRITICAL: Each provided transaction id must appear in EXACTLY ONE category. Never duplicate ids.
 - If kind == "refund", category MUST be "Refunds".
 - If kind == "expense", choose the best category based on merchant.
 - Return top-level schema exactly.
@@ -300,7 +337,8 @@ Transactions JSON:
 
         Map<String, Object> body = Map.of(
                 "model", model,
-                "max_tokens", 3500,
+                // Keep output bounded; input size is controlled via chunking
+                "max_tokens", 600,
                 "temperature", 0.2,
                 "messages", List.of(
                         Map.of("role", "user", "content", prompt)
@@ -359,10 +397,10 @@ Transactions JSON:
     /**
      * Validates:
      *  - no duplicate txnIds across categories
-     *  - returns list of missing ids (1..expectedTxnCount) not present anywhere
+     *  - returns list of missing ids (from expectedIds) not present anywhere
      */
     @SuppressWarnings("unchecked")
-    private List<Integer> validateAndGetMissingTxnIds(Map<String, Object> aiJson, int expectedTxnCount) {
+    private List<Integer> validateAndGetMissingTxnIds(Map<String, Object> aiJson, Set<Integer> expectedIds) {
         Object catsObj = aiJson.get("categories");
         if (!(catsObj instanceof List<?> cats)) {
             throw new IllegalArgumentException("AI JSON missing categories array.");
@@ -385,6 +423,10 @@ Transactions JSON:
                         ? n.intValue()
                         : Integer.parseInt(String.valueOf(idObj));
 
+                if (!expectedIds.contains(tid)) {
+                    throw new IllegalArgumentException("AI returned txnId not in this request chunk: " + tid);
+                }
+
                 if (!seen.add(tid)) {
                     throw new IllegalArgumentException("AI duplicated transaction id across categories: " + tid);
                 }
@@ -392,30 +434,35 @@ Transactions JSON:
         }
 
         List<Integer> missing = new ArrayList<>();
-        for (int i = 1; i <= expectedTxnCount; i++) {
+        for (Integer i : expectedIds) {
             if (!seen.contains(i)) missing.add(i);
         }
+        // stable order helps debugging
+        missing.sort(Comparator.naturalOrder());
         return missing;
     }
 
-    private String buildRepairPrompt(String previousJson, List<Integer> missingIds, int expectedTxnCount) {
+    private String buildRepairPrompt(String previousJson, List<Integer> missingIds, Set<Integer> expectedIds) {
         return """
 You returned JSON but it is invalid because some transaction ids were not assigned.
 
 Fix it and return STRICT JSON ONLY. Keep the same schema.
 
 CRITICAL rules:
-- Every transaction id from 1..%d must appear in EXACTLY ONE category.
+- Every provided transaction id must appear in EXACTLY ONE category.
 - Do not duplicate any ids.
 - Refunds (kind=="refund") MUST be in category "Refunds".
 - Use only allowed categories.
 
+Provided transaction ids (scope): %s
 Missing ids that MUST be assigned: %s
 
 Here is your previous JSON (repair it):
 %s
-""".formatted(expectedTxnCount, missingIds.toString(), previousJson);
+""".formatted(expectedIds.toString(), missingIds.toString(), previousJson);
     }
+
+    // ---------------- Deterministic helpers ----------------
 
     private Map<Integer, Item> buildIdToItem(List<Map<String, Object>> items) {
         Map<Integer, Item> out = new HashMap<>();
@@ -459,9 +506,56 @@ Here is your previous JSON (repair it):
         return s.contains("payment") || s.contains("thank you") || s.contains("autopay");
     }
 
+    private String buildFilenameLabel(List<MultipartFile> files) {
+        if (files == null || files.isEmpty()) return "";
+        List<String> names = files.stream()
+                .filter(Objects::nonNull)
+                .map(MultipartFile::getOriginalFilename)
+                .filter(Objects::nonNull)
+                .filter(s -> !s.isBlank())
+                .toList();
+        if (names.isEmpty()) return "uploaded files";
+        if (names.size() == 1) return names.get(0);
+        if (names.size() <= 3) return String.join(", ", names);
+        return names.size() + " files";
+    }
+
+    private List<List<Map<String, Object>>> chunkItems(List<Map<String, Object>> items, int chunkSize) {
+        List<List<Map<String, Object>>> chunks = new ArrayList<>();
+        for (int i = 0; i < items.size(); i += chunkSize) {
+            int end = Math.min(i + chunkSize, items.size());
+            chunks.add(items.subList(i, end));
+        }
+        return chunks;
+    }
+
     // ---------------- CSV parsing (bank-agnostic) ----------------
 
-    private List<Txn> parseCsv(MultipartFile file) {
+    // CHANGED: parse multiple files, merge, sort, and attempt dedupe
+    private List<Txn> parseCsv(List<MultipartFile> files) {
+        List<Txn> all = new ArrayList<>();
+
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) continue;
+            all.addAll(parseCsvSingle(file));
+        }
+
+        // stable ordering improves user experience + determinism
+        all.sort(Comparator.comparing(Txn::date).thenComparing(Txn::description));
+
+        // OPTIONAL best-effort dedupe (same day + amount + normalized merchant)
+        // This protects you when banks export overlapping ranges across months.
+        LinkedHashMap<String, Txn> dedup = new LinkedHashMap<>();
+        for (Txn t : all) {
+            String key = t.date() + "|" + t.amount() + "|" + normalizeMerchant(t.description()).toLowerCase(Locale.ROOT);
+            dedup.putIfAbsent(key, t);
+        }
+
+        return new ArrayList<>(dedup.values());
+    }
+
+    // Original single-file parser extracted as helper
+    private List<Txn> parseCsvSingle(MultipartFile file) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
 

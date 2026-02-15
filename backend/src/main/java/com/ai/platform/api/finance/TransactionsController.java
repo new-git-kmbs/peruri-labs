@@ -5,6 +5,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -18,12 +19,18 @@ public class TransactionsController {
     }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "No file uploaded"));
+    public ResponseEntity<?> upload(@RequestParam("files") List<MultipartFile> files) {
+        if (files == null || files.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "No files uploaded"));
         }
 
-        // AI-first: parse CSV -> send to LLM -> return LLM JSON result
-        return ResponseEntity.ok(transactionsService.aiAnalyze(file));
+        // Optional: reject empty files cleanly
+        boolean allEmpty = files.stream().allMatch(f -> f == null || f.isEmpty());
+        if (allEmpty) {
+            return ResponseEntity.badRequest().body(Map.of("error", "All uploaded files are empty"));
+        }
+
+        // Multi-file: parse + merge deterministically in service, then AI categorize in safe chunks
+        return ResponseEntity.ok(transactionsService.aiAnalyze(files));
     }
 }
