@@ -97,7 +97,6 @@ export default function DashboardPage() {
             Coming soon: Portfolio Analyzer · Fund Comparison · Reverse CAGR
           </div>
         </div>
-
         
       </div>
     </div>
