@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/clerk-react";
 
 type AiMerchant = {
@@ -24,12 +24,9 @@ type AiInsights = {
 type AiResult = {
   totalExpenses: number;
   billPaymentsTotal?: number;
+  payrollTotal?: number; // NEW
   categories: AiCategory[];
-
-  // Backward compatibility (you might still populate this in backend)
   notes?: string;
-
-  // NEW: structured insights
   insights?: AiInsights;
 };
 
@@ -40,15 +37,25 @@ type UploadAiResponse = {
   ai: AiResult;
 };
 
+
 export default function SpendingIntelligencePage() {
   const { getToken } = useAuth();
 
   const [files, setFiles] = useState<File[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    return `${y}-${m}`;
+  });
+
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [result, setResult] = useState<UploadAiResponse | null>(null);
+
+  const monthOptions = useMemo(() => buildRecentMonthOptions(18), []);
 
   function addFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
@@ -103,6 +110,7 @@ export default function SpendingIntelligencePage() {
 
       const formData = new FormData();
       files.forEach((f) => formData.append("files", f));
+      formData.append("monthKey", selectedMonth); // NEW
 
       const response = await fetch(`${API_BASE}/api/transactions/upload`, {
         method: "POST",
@@ -124,7 +132,7 @@ export default function SpendingIntelligencePage() {
 
       setResult(data as UploadAiResponse);
       clearFiles();
-      setMessage("File uploaded successfully. AI analysis complete.");
+      setMessage(`File uploaded successfully. AI analysis complete for ${formatMonthLabel(selectedMonth)}.`);
     } catch (err: any) {
       setMessage(err?.message ?? "Unexpected error occurred.");
     } finally {
@@ -139,7 +147,6 @@ export default function SpendingIntelligencePage() {
 
   const insights = result?.ai?.insights;
 
-  // Support both the new structured insights and legacy notes
   const hasStructuredInsights =
     !!insights &&
     (hasAny(insights.highlights) ||
@@ -179,6 +186,29 @@ export default function SpendingIntelligencePage() {
       >
         <div style={{ fontWeight: 700, marginBottom: 10 }}>
           Upload Transaction File(s)
+        </div>
+
+        {/* NEW: month selector */}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>Analyze month</div>
+          <select
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            disabled={loading}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              cursor: loading ? "not-allowed" : "pointer",
+              minWidth: 180,
+            }}
+          >
+            {monthOptions.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         <input
@@ -269,7 +299,7 @@ export default function SpendingIntelligencePage() {
               opacity: loading || files.length === 0 ? 0.7 : 1,
             }}
           >
-            {loading ? "Uploading..." : "Upload & Analyze"}
+            {loading ? "Uploading..." : `Upload & Analyze (${formatMonthLabel(selectedMonth)})`}
           </button>
         </div>
 
@@ -330,7 +360,9 @@ export default function SpendingIntelligencePage() {
             <Stat label="Transactions Used" value={result!.transactionCount} />
 
             <Stat label="Total Expenses" value={Number(result!.ai.totalExpenses)} money />
-
+			{typeof result!.ai.payrollTotal === "number" && (
+				<Stat label="Payroll" value={Number(result!.ai.payrollTotal)} money />
+			)}
             {typeof result!.ai.billPaymentsTotal === "number" && (
               <Stat label="Bill Payment" value={Number(result!.ai.billPaymentsTotal)} money />
             )}
@@ -380,14 +412,12 @@ export default function SpendingIntelligencePage() {
               Source file: {result!.filename}
             </div>
 
-            {/* NEW: AI Insights section */}
             {(hasStructuredInsights || hasLegacyNotes) && (
               <div style={{ marginTop: 16, fontSize: 13, opacity: 0.95 }}>
                 <div style={{ fontWeight: 900, marginBottom: 8 }}>AI Insights</div>
 
                 {hasStructuredInsights ? (
                   <div style={{ lineHeight: 1.55 }}>
-                    {/* Highlights */}
                     {hasAny(insights?.highlights) && (
                       <ul style={{ marginTop: 0, marginBottom: 10, paddingLeft: 18 }}>
                         {insights!.highlights!.map((h, idx) => (
@@ -396,7 +426,6 @@ export default function SpendingIntelligencePage() {
                       </ul>
                     )}
 
-                    {/* Key calls */}
                     {(insights?.topSpendingCategory || insights?.topMerchant) && (
                       <div style={{ marginBottom: 10 }}>
                         {insights?.topSpendingCategory && (
@@ -412,7 +441,6 @@ export default function SpendingIntelligencePage() {
                       </div>
                     )}
 
-                    {/* Concentration */}
                     {hasAny(insights?.concentrationNotes) && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontWeight: 800, marginBottom: 4 }}>
@@ -426,7 +454,6 @@ export default function SpendingIntelligencePage() {
                       </div>
                     )}
 
-                    {/* Optimization */}
                     {hasAny(insights?.optimizationIdeas) && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontWeight: 800, marginBottom: 4 }}>
@@ -440,7 +467,6 @@ export default function SpendingIntelligencePage() {
                       </div>
                     )}
 
-                    {/* Anomalies */}
                     {hasAny(insights?.anomalies) && (
                       <div style={{ marginBottom: 0 }}>
                         <div style={{ fontWeight: 800, marginBottom: 4 }}>
@@ -455,7 +481,6 @@ export default function SpendingIntelligencePage() {
                     )}
                   </div>
                 ) : (
-                  // Legacy notes fallback (if backend still returns notes)
                   <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
                     {result!.ai.notes}
                   </div>
@@ -517,4 +542,29 @@ function fmtMoney(n: number) {
 
 function hasAny(arr?: unknown[]) {
   return Array.isArray(arr) && arr.length > 0;
+}
+
+function buildRecentMonthOptions(count: number): { key: string; label: string }[] {
+  const out: { key: string; label: string }[] = [];
+  const d = new Date();
+  d.setDate(1);
+
+  for (let i = 0; i < count; i++) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const key = `${y}-${m}`;
+    out.push({ key, label: formatMonthLabel(key) });
+    d.setMonth(d.getMonth() - 1);
+  }
+
+  return out;
+}
+
+function formatMonthLabel(monthKey: string) {
+  // monthKey: "YYYY-MM"
+  const [yy, mm] = monthKey.split("-");
+  const y = Number(yy);
+  const m = Number(mm);
+  const dt = new Date(y, m - 1, 1);
+  return dt.toLocaleString("en-US", { month: "short", year: "numeric" });
 }

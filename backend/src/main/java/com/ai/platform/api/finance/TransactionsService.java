@@ -15,6 +15,7 @@ import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -41,12 +42,47 @@ public class TransactionsService {
     private static final int MAX_ITEMS_PER_LLM_CALL = 25;
     private static final int MAX_TOTAL_ITEMS = 2000;
 
-    // CHANGED: multi-file entry point
-    public Map<String, Object> aiAnalyze(List<MultipartFile> files) {
+    // ---------------- Month filtering ----------------
+
+    private static YearMonth parseMonthKey(String monthKey) {
+        return YearMonth.parse(monthKey); // "YYYY-MM"
+    }
+
+    private static LocalDate monthStartInclusive(String monthKey) {
+        return parseMonthKey(monthKey).atDay(1);
+    }
+
+    private static LocalDate nextMonthStartExclusive(String monthKey) {
+        return parseMonthKey(monthKey).plusMonths(1).atDay(1);
+    }
+
+    private static List<Txn> filterTxnsToMonth(List<Txn> txns, String monthKey) {
+        if (monthKey == null || monthKey.isBlank()) return txns;
+
+        LocalDate start = monthStartInclusive(monthKey);
+        LocalDate endExcl = nextMonthStartExclusive(monthKey);
+
+        List<Txn> out = new ArrayList<>();
+        for (Txn t : txns) {
+            LocalDate d = t.date();
+            if (d != null && !d.isBefore(start) && d.isBefore(endExcl)) {
+                out.add(t);
+            }
+        }
+        return out;
+    }
+
+    // CHANGED: multi-file entry point + selected month
+    // monthKey format: "YYYY-MM" (example: "2026-02")
+    public Map<String, Object> aiAnalyze(List<MultipartFile> files, String monthKey) {
         BigDecimal billPaymentsTotal = BigDecimal.ZERO;
+        BigDecimal payrollTotal = BigDecimal.ZERO; // NEW
 
         // Parse + merge transactions from all files
-        List<Txn> txns = parseCsv(files);
+        List<Txn> txnsAll = parseCsv(files);
+
+        // Filter ONLY selected month transactions
+        List<Txn> txns = filterTxnsToMonth(txnsAll, monthKey);
 
         // Track date range for "usable" items (non-payments, non-zero)
         LocalDate minDate = null;
@@ -61,6 +97,12 @@ public class TransactionsService {
             BigDecimal amt = t.amount();
 
             if (amt == null || amt.compareTo(BigDecimal.ZERO) == 0) continue;
+
+            // NEW: Track payroll (positive inflows) separately, but do NOT send to AI
+            if (amt.compareTo(BigDecimal.ZERO) > 0 && isPayroll(desc)) {
+                payrollTotal = payrollTotal.add(amt);
+                continue;
+            }
 
             // Exclude payments (NOT spend, NOT refund), but track total
             if (isPayment(desc)) {
@@ -151,7 +193,6 @@ public class TransactionsService {
 
                 for (Integer tid : txnIds) {
                     if (tid == null) continue;
-                    // Ensure no duplicates across chunks (shouldn't happen because ids are global unique)
                     if (txnIdToCategory.containsKey(tid)) {
                         throw new IllegalArgumentException("AI duplicated transaction id across chunks: " + tid);
                     }
@@ -169,11 +210,8 @@ public class TransactionsService {
             throw new IllegalArgumentException("AI did not assign all transactions exactly once. Missing ids: " + missingOverall);
         }
 
-        // Enforce rule: refunds must be Refunds category (deterministic safety)
-        // and recompute totals/merchants deterministically from txnIds (no AI math drift).
         Map<Integer, Item> idToItem = buildIdToItem(items);
 
-        // Build category -> txnIds from the per-txn mapping
         Map<String, LinkedHashSet<Integer>> catToIds = new HashMap<>();
         for (int tid = 1; tid <= expectedTxnCount; tid++) {
             Item it = idToItem.get(tid);
@@ -182,13 +220,11 @@ public class TransactionsService {
             String cat = txnIdToCategory.get(tid);
             if (cat == null || cat.isBlank()) cat = "Other";
 
-            // deterministic override: refunds always go to Refunds
             if ("refund".equals(it.kind())) cat = "Refunds";
 
             catToIds.computeIfAbsent(cat, k -> new LinkedHashSet<>()).add(tid);
         }
 
-        // Now rebuild categories deterministically: totals + merchants from txnIds
         List<Map<String, Object>> rebuiltCategories = new ArrayList<>();
         for (Map.Entry<String, LinkedHashSet<Integer>> e : catToIds.entrySet()) {
             String cat = e.getKey();
@@ -206,7 +242,6 @@ public class TransactionsService {
                 merchantTotals.merge(it.merchant(), it.amount(), BigDecimal::add);
             }
 
-            // top 5 merchants
             List<Map<String, Object>> merchants = merchantTotals.entrySet().stream()
                     .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
                     .limit(5)
@@ -226,7 +261,6 @@ public class TransactionsService {
             rebuiltCategories.add(catObj);
         }
 
-        // Sort categories by total desc
         rebuiltCategories.sort((a, b) -> {
             BigDecimal ta = toBigDecimal(a.get("total"));
             BigDecimal tb = toBigDecimal(b.get("total"));
@@ -236,7 +270,6 @@ public class TransactionsService {
         Map<String, Object> aiJsonOut = new HashMap<>();
         aiJsonOut.put("categories", rebuiltCategories);
 
-        // Deterministic totals:
         BigDecimal grossSpend = items.stream()
                 .filter(m -> "expense".equals(String.valueOf(m.get("kind"))))
                 .map(m -> toBigDecimal(m.get("amount")))
@@ -253,12 +286,11 @@ public class TransactionsService {
         aiJsonOut.put("grossSpend", grossSpend);
         aiJsonOut.put("refundsTotal", refundsTotal);
 
-        // include bill payment total so UI can show it at the top
         aiJsonOut.put("billPaymentsTotal", billPaymentsTotal);
+        aiJsonOut.put("payrollTotal", payrollTotal); // NEW
 
-        // ---------------- NEW: AI Insights (from deterministic aggregates, not raw txns) ----------------
         Map<String, Object> summaryForInsights = buildInsightsSummary(
-                items, rebuiltCategories, grossSpend, refundsTotal, netSpend, billPaymentsTotal, minDate, maxDate
+                items, rebuiltCategories, grossSpend, refundsTotal, netSpend, billPaymentsTotal, payrollTotal, minDate, maxDate
         );
 
         String insightsPrompt = buildInsightsPrompt(summaryForInsights);
@@ -276,10 +308,6 @@ public class TransactionsService {
 
     // ---------------- Prompt / LLM ----------------
 
-    /**
-     * Categorization prompt ONLY.
-     * CHANGED: removed "notes" and removed "totalExpenses" (AI should not do math / narration).
-     */
     private String buildPrompt(List<Map<String, Object>> items) {
         String txnsJson;
         try {
@@ -288,7 +316,6 @@ public class TransactionsService {
             throw new IllegalArgumentException("Failed to serialize transactions for AI prompt.", e);
         }
 
-        // Note: ids in this chunk are global ids. Validation uses the set of ids present in this chunk.
         return """
 You are a financial categorization engine.
 
@@ -328,9 +355,6 @@ Transactions JSON:
 """ + txnsJson;
     }
 
-    /**
-     * NEW: Insights prompt uses deterministic aggregates only (no raw txns).
-     */
     private String buildInsightsPrompt(Map<String, Object> summary) {
         String json;
         try {
@@ -370,9 +394,6 @@ Summary JSON:
 """ + json;
     }
 
-    /**
-     * NEW: Deterministic aggregates for AI Insights.
-     */
     private Map<String, Object> buildInsightsSummary(
             List<Map<String, Object>> items,
             List<Map<String, Object>> rebuiltCategories,
@@ -380,6 +401,7 @@ Summary JSON:
             BigDecimal refundsTotal,
             BigDecimal netSpend,
             BigDecimal billPaymentsTotal,
+            BigDecimal payrollTotal,
             LocalDate minDate,
             LocalDate maxDate
     ) {
@@ -393,8 +415,8 @@ Summary JSON:
         out.put("refundsTotal", refundsTotal);
         out.put("netSpend", netSpend);
         out.put("billPaymentsTotal", billPaymentsTotal);
+        out.put("payrollTotal", payrollTotal);
 
-        // Overall merchant totals + frequency (expenses only)
         Map<String, BigDecimal> merchantTotals = new HashMap<>();
         Map<String, Integer> merchantCounts = new HashMap<>();
 
@@ -423,7 +445,6 @@ Summary JSON:
 
         out.put("topMerchants", topMerchants);
 
-        // Top categories with percentages and their top merchants (already computed deterministically)
         List<Map<String, Object>> topCategories = rebuiltCategories.stream()
                 .filter(c -> !"Refunds".equals(String.valueOf(c.get("category"))))
                 .filter(c -> toBigDecimal(c.get("total")).compareTo(BigDecimal.ZERO) > 0)
@@ -434,7 +455,6 @@ Summary JSON:
 
                     BigDecimal pct = BigDecimal.ZERO;
                     if (grossSpend != null && grossSpend.compareTo(BigDecimal.ZERO) > 0) {
-                        // percentage rounded to 1 decimal place for readability
                         pct = total.multiply(new BigDecimal("100"))
                                 .divide(grossSpend, 1, java.math.RoundingMode.HALF_UP);
                     }
@@ -450,7 +470,6 @@ Summary JSON:
 
         out.put("topCategories", topCategories);
 
-        // Useful for "concentration" insights: top-3 categories share
         BigDecimal top3 = BigDecimal.ZERO;
         for (int i = 0; i < Math.min(3, topCategories.size()); i++) {
             top3 = top3.add(toBigDecimal(topCategories.get(i).get("total")));
@@ -479,7 +498,6 @@ Summary JSON:
 
         Map<String, Object> body = Map.of(
                 "model", model,
-                // Keep output bounded; input size is controlled via chunking
                 "max_tokens", 700,
                 "temperature", 0.2,
                 "messages", List.of(
@@ -536,11 +554,6 @@ Summary JSON:
         }
     }
 
-    /**
-     * Validates:
-     *  - no duplicate txnIds across categories
-     *  - returns list of missing ids (from expectedIds) not present anywhere
-     */
     @SuppressWarnings("unchecked")
     private List<Integer> validateAndGetMissingTxnIds(Map<String, Object> aiJson, Set<Integer> expectedIds) {
         Object catsObj = aiJson.get("categories");
@@ -579,7 +592,6 @@ Summary JSON:
         for (Integer i : expectedIds) {
             if (!seen.contains(i)) missing.add(i);
         }
-        // stable order helps debugging
         missing.sort(Comparator.naturalOrder());
         return missing;
     }
@@ -641,11 +653,22 @@ Here is your previous JSON (repair it):
 
     private record Item(String merchant, BigDecimal amount, String kind) {}
 
-    // Payments should be excluded. Keep this tight so refunds aren't accidentally excluded.
     private boolean isPayment(String desc) {
         if (desc == null) return false;
         String s = desc.toLowerCase(Locale.ROOT);
         return s.contains("payment") || s.contains("thank you") || s.contains("autopay");
+    }
+
+    // NEW
+    private boolean isPayroll(String desc) {
+        if (desc == null) return false;
+        String s = desc.toLowerCase(Locale.ROOT);
+        return s.contains("payroll")
+                || s.contains("salary")
+                || s.contains("direct deposit")
+                || s.contains("paycheck")
+                || s.contains("ach credit")
+                || s.contains("employer");
     }
 
     private String buildFilenameLabel(List<MultipartFile> files) {
@@ -673,7 +696,6 @@ Here is your previous JSON (repair it):
 
     // ---------------- CSV parsing (bank-agnostic) ----------------
 
-    // CHANGED: parse multiple files, merge, sort, and attempt dedupe
     private List<Txn> parseCsv(List<MultipartFile> files) {
         List<Txn> all = new ArrayList<>();
 
@@ -682,11 +704,8 @@ Here is your previous JSON (repair it):
             all.addAll(parseCsvSingle(file));
         }
 
-        // stable ordering improves user experience + determinism
         all.sort(Comparator.comparing(Txn::date).thenComparing(Txn::description));
 
-        // OPTIONAL best-effort dedupe (same day + amount + normalized merchant)
-        // This protects you when banks export overlapping ranges across months.
         LinkedHashMap<String, Txn> dedup = new LinkedHashMap<>();
         for (Txn t : all) {
             String key = t.date() + "|" + t.amount() + "|" + normalizeMerchant(t.description()).toLowerCase(Locale.ROOT);
@@ -696,7 +715,6 @@ Here is your previous JSON (repair it):
         return new ArrayList<>(dedup.values());
     }
 
-    // Original single-file parser extracted as helper
     private List<Txn> parseCsvSingle(MultipartFile file) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {

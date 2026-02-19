@@ -19,9 +19,16 @@ public class TransactionsController {
     }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<?> upload(@RequestParam("files") List<MultipartFile> files) {
+    public ResponseEntity<?> upload(
+            @RequestParam("files") List<MultipartFile> files,
+            @RequestParam("monthKey") String monthKey
+    ) {
         if (files == null || files.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "No files uploaded"));
+        }
+
+        if (monthKey == null || monthKey.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Missing monthKey"));
         }
 
         // Optional: reject empty files cleanly
@@ -30,7 +37,6 @@ public class TransactionsController {
             return ResponseEntity.badRequest().body(Map.of("error", "All uploaded files are empty"));
         }
 
-        // Multi-file: parse + merge deterministically in service, then AI categorize in safe chunks
-        return ResponseEntity.ok(transactionsService.aiAnalyze(files));
+        return ResponseEntity.ok(transactionsService.aiAnalyze(files, monthKey));
     }
 }
