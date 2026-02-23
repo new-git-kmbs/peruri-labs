@@ -170,13 +170,26 @@ export default function SpendingIntelligencePage() {
 
   const hasLegacyNotes = !!result?.ai?.notes && result.ai.notes.trim().length > 0;
 
+function toTitleCase(str: string) {
+  return str
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function moveMerchant(
   fromCategory: string,
   merchantName: string,
   amount: number,
   toCategory: string
 ) {
-  if (fromCategory === toCategory) return;
+  // Normalize input
+  const normalizedTo = toCategory.trim().toLowerCase();
+  const normalizedFrom = fromCategory.trim().toLowerCase();
+
+  if (normalizedFrom === normalizedTo) return;
 
   setLocalCategories((prev) => {
     const updated = prev.map((c) => ({
@@ -184,8 +197,15 @@ function moveMerchant(
       merchants: [...(c.merchants || [])],
     }));
 
-    const source = updated.find((c) => c.category === fromCategory);
-    const target = updated.find((c) => c.category === toCategory);
+    // Case-insensitive source match
+    const source = updated.find(
+      (c) => c.category.trim().toLowerCase() === normalizedFrom
+    );
+
+    // Case-insensitive target match
+    let target = updated.find(
+      (c) => c.category.trim().toLowerCase() === normalizedTo
+    );
 
     if (!source) return prev;
 
@@ -201,13 +221,16 @@ function moveMerchant(
     source.merchants.splice(idx, 1);
     source.total = Number(source.total) - Number(amount);
 
-    // Add to target
+    // If category exists (any casing), reuse it
     if (target) {
       target.merchants.push(merchantObj);
       target.total = Number(target.total) + Number(amount);
     } else {
+      // Create new category using cleaned original casing
+      const cleanedLabel = toTitleCase(toCategory.trim());
+
       updated.push({
-        category: toCategory,
+        category: cleanedLabel,
         total: amount,
         merchants: [merchantObj],
       });
@@ -461,22 +484,41 @@ function moveMerchant(
       <td style={td}>{m.merchant}</td>
       <td style={td}>{fmtMoney(Number(m.amount))}</td>
       <td style={td}>
-       <select
+<select
   value={c.category}
-  onChange={(e) =>
-    moveMerchant(
-      c.category,
-      m.merchant,
-      Number(m.amount),
-      e.target.value
-    )
-  }
+  onChange={(e) => {
+    const selected = e.target.value;
+
+    if (selected === "__new__") {
+      const name = prompt("Enter new category name:");
+      if (!name) return;
+
+      const cleaned = name.trim();
+      if (!cleaned) return;
+
+      moveMerchant(
+        c.category,
+        m.merchant,
+        Number(m.amount),
+        cleaned
+      );
+    } else {
+      moveMerchant(
+        c.category,
+        m.merchant,
+        Number(m.amount),
+        selected
+      );
+    }
+  }}
 >
   {localCategories.map((opt) => (
     <option key={opt.category} value={opt.category}>
       {opt.category}
     </option>
   ))}
+
+  <option value="__new__">+ Create New Category</option>
 </select>
       </td>
     </tr>
