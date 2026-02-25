@@ -613,14 +613,12 @@ if (target) {
       moveMerchant(
         c.category,
         m.merchant,
-        Number(m.amount),
         cleaned
       );
     } else {
       moveMerchant(
         c.category,
         m.merchant,
-        Number(m.amount),
         selected
       );
     }
