@@ -291,8 +291,7 @@ function toTitleCase(str: string) {
 
 function moveMerchant(
   fromCategory: string,
-  merchantName: string,
-  amount: number,
+  merchantName: string,  
   toCategory: string
 ) {
   // Normalize input
