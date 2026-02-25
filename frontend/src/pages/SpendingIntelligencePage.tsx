@@ -252,12 +252,20 @@ const derivedInsights = useMemo(() => {
   };
 }, [derivedCategories]);
 
-  const insights = useMemo(() => {
-  if (!result?.ai?.insights) return derivedInsights;
+  const insights: AiInsights | null = useMemo(() => {
+  if (!result?.ai?.insights && !derivedInsights) return null;
 
   return {
-    ...result.ai.insights,
-    ...(derivedInsights || {}),
+    highlights: result?.ai?.insights?.highlights ?? [],
+    concentrationNotes: result?.ai?.insights?.concentrationNotes ?? [],
+    optimizationIdeas: result?.ai?.insights?.optimizationIdeas ?? [],
+    anomalies: result?.ai?.insights?.anomalies ?? [],
+    topSpendingCategory:
+      derivedInsights?.topSpendingCategory ??
+      result?.ai?.insights?.topSpendingCategory,
+    topMerchant:
+      derivedInsights?.topMerchant ??
+      result?.ai?.insights?.topMerchant,
   };
 }, [result?.ai?.insights, derivedInsights]);
 
