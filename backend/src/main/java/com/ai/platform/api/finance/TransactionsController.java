@@ -39,4 +39,13 @@ public class TransactionsController {
 
         return ResponseEntity.ok(transactionsService.aiAnalyze(files, monthKey));
     }
+	@PostMapping("/regenerate-insights")
+public ResponseEntity<?> regenerateInsights(
+        @RequestBody Map<String, Object> payload) {
+
+    Map<String, Object> response =
+            transactionsService.regenerateInsights(payload);
+
+    return ResponseEntity.ok(response);
+}
 }

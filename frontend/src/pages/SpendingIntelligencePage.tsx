@@ -54,6 +54,7 @@ export default function SpendingIntelligencePage() {
   });
 
   const [loading, setLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [result, setResult] = useState<UploadAiResponse | null>(null);
 
@@ -61,10 +62,10 @@ export default function SpendingIntelligencePage() {
   const [localCategories, setLocalCategories] = useState<AiCategory[]>([]);
 
   useEffect(() => {
-    if (result?.ai?.categories) {
-      setLocalCategories(result.ai.categories);
-    }
-  }, [result]);
+  if (result?.ai?.categories && localCategories.length === 0) {
+    setLocalCategories(result.ai.categories);
+  }
+}, [result]);
 
   const monthOptions = useMemo(() => buildRecentMonthOptions(18), []);
 
@@ -151,13 +152,114 @@ export default function SpendingIntelligencePage() {
       setLoading(false);
     }
   }
+async function handleRegenerateInsights() {
+  const API_BASE = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (!API_BASE || !derivedCategories.length) return;
+
+  try {
+    setRegenerating(true);
+
+    const token = await getToken();
+    if (!token) throw new Error("Authentication failed.");
+
+    const response = await fetch(
+      `${API_BASE}/api/transactions/regenerate-insights`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          categories: derivedCategories.map((c) => ({
+            category: c.category,
+            merchants: c.merchants,
+          })),
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data?.error || "Failed to regenerate insights.");
+    }
+
+    // Only update insights
+    setResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            ai: {
+              ...prev.ai,
+              insights: data.insights,
+            },
+          }
+        : prev
+    );
+  } catch (err: any) {
+    console.error(err);
+  } finally {
+    setRegenerating(false);
+  }
+}
 
   const hasAi =
     !!result?.ai &&
     Array.isArray(result.ai.categories) &&
     result.ai.categories.length > 0;
 
-  const insights = result?.ai?.insights;
+const derivedCategories = useMemo(() => {
+  return localCategories
+    .map((c) => {
+      const derivedTotal = (c.merchants || []).reduce(
+        (sum, m) => sum + Number(m.amount),
+        0
+      );
+
+      return {
+        ...c,
+        total: derivedTotal,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+}, [localCategories]);
+
+const derivedTotalExpenses = useMemo(() => {
+  return derivedCategories.reduce((sum, c) => sum + c.total, 0);
+}, [derivedCategories]);
+
+const derivedInsights = useMemo(() => {
+  if (!derivedCategories.length) return null;
+
+  const sorted = [...derivedCategories].sort((a, b) => b.total - a.total);
+
+  const topCategory = sorted[0];
+
+  let topMerchant: { merchant: string; amount: number } | null = null;
+
+  for (const c of derivedCategories) {
+    for (const m of c.merchants || []) {
+      if (!topMerchant || m.amount > topMerchant.amount) {
+        topMerchant = m;
+      }
+    }
+  }
+
+  return {
+    topSpendingCategory: topCategory?.category,
+    topMerchant: topMerchant?.merchant,
+  };
+}, [derivedCategories]);
+
+  const insights = useMemo(() => {
+  if (!result?.ai?.insights) return derivedInsights;
+
+  return {
+    ...result.ai.insights,
+    ...(derivedInsights || {}),
+  };
+}, [result?.ai?.insights, derivedInsights]);
 
   const hasStructuredInsights =
     !!insights &&
@@ -215,28 +317,29 @@ function moveMerchant(
 
     if (idx === -1) return prev;
 
-    const merchantObj = source.merchants[idx];
+const merchantObj = source.merchants[idx];
 
-    // Remove from source
-    source.merchants.splice(idx, 1);
-    source.total = Number(source.total) - Number(amount);
+// Remove from source
+source.merchants.splice(idx, 1);
 
-    // If category exists (any casing), reuse it
-    if (target) {
-      target.merchants.push(merchantObj);
-      target.total = Number(target.total) + Number(amount);
-    } else {
-      // Create new category using cleaned original casing
-      const cleanedLabel = toTitleCase(toCategory.trim());
+// ❌ DO NOT manually adjust totals anymore
 
-      updated.push({
-        category: cleanedLabel,
-        total: amount,
-        merchants: [merchantObj],
-      });
+// If category exists (any casing), reuse it
+if (target) {
+  target.merchants.push(merchantObj);
+} else {
+  // Create new category using cleaned original casing
+  const cleanedLabel = toTitleCase(toCategory.trim());
+
+  updated.push({
+    category: cleanedLabel,
+    total: 0, // placeholder — totals will be derived
+    merchants: [merchantObj],
+  });
+
     }
 
-    return updated.sort((a, b) => Number(b.total) - Number(a.total));
+    return updated;
   });
 }
 
@@ -463,11 +566,15 @@ function moveMerchant(
               Spending by Category
             </div>
 
-            {localCategories.map((c) => (
+            {derivedCategories.map((c) => (
               <div key={c.category} style={{ marginBottom: 16 }}>
-                <div style={{ fontWeight: 900 }}>
-                  {c.category} — {fmtMoney(Number(c.total))}
-                </div>
+               <div style={{ fontWeight: 900 }}>
+  {c.category} — {fmtMoney(c.total)} (
+    {derivedTotalExpenses > 0
+      ? ((c.total / derivedTotalExpenses) * 100).toFixed(1)
+      : "0.0"}
+    %)
+</div>
 
                 <div style={{ marginTop: 8 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -536,6 +643,19 @@ function moveMerchant(
             {(hasStructuredInsights || hasLegacyNotes) && (
               <div style={{ marginTop: 16, fontSize: 13, opacity: 0.95 }}>
                 <div style={{ fontWeight: 900, marginBottom: 8 }}>AI Insights</div>
+				<button
+  onClick={handleRegenerateInsights}
+  disabled={regenerating}
+  style={{
+    marginBottom: 12,
+    padding: "6px 10px",
+    fontSize: 12,
+    cursor: regenerating ? "not-allowed" : "pointer",
+    opacity: regenerating ? 0.7 : 1,
+  }}
+>
+  {regenerating ? "Regenerating..." : "🔁 Regenerate Insights"}
+</button>
 
                 {hasStructuredInsights ? (
                   <div style={{ lineHeight: 1.55 }}>

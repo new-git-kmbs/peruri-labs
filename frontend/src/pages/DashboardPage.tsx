@@ -37,13 +37,17 @@ export default function DashboardPage() {
           gap: 14,
         }}
       >
-        {/* Product Suite (parent card) */}
+
+        {/* ========================= */}
+        {/* PRODUCT SUITE DISABLED */}
+        {/* ========================= */}
+
+        {/*
         <div style={parentCardStyle}>
           <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
             Product Suite
           </div>
 
-          {/* AI Reviewer (child card) */}
           <div
             onClick={() => navigate("/ai-reviewer")}
             style={childCardStyle}
@@ -54,24 +58,26 @@ export default function DashboardPage() {
             </div>
 
             <div style={{ opacity: 0.8, lineHeight: 1.35 }}>
-              Score user stories, detect gaps &amp; edge cases, generate Gherkin
+              Score user stories, detect gaps & edge cases, generate Gherkin
               ACs, and produce Jira-ready review comments.
             </div>
           </div>
 
           <div style={comingSoonStyle}>
-            Coming soon: AI User Story Generator · AI PRD Builder · AI Backlog
-            Optimizer
+            Coming soon: AI User Story Generator · AI PRD Builder · AI Backlog Optimizer
           </div>
         </div>
+        */}
 
-        {/* Finance (parent card) */}
+        {/* ========================= */}
+        {/* Finance (Active) */}
+        {/* ========================= */}
+
         <div style={parentCardStyle}>
           <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>
             Finance
           </div>
 
-          {/* Spending Intelligence (child card) */}
           <div
             onClick={() => navigate("/spending-intelligence")}
             style={childCardStyle}
@@ -91,8 +97,8 @@ export default function DashboardPage() {
             Coming soon: Portfolio Analyzer · Fund Comparison · Reverse CAGR
           </div>
         </div>
+
       </div>
     </div>
   );
 }
-/*dummy commit to force deploy not sure why it is failing to pick latest changes*/

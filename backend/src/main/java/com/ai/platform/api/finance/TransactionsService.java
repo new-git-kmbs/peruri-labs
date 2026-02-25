@@ -202,6 +202,57 @@ public class TransactionsService {
         return result;
     }
 
+public Map<String, Object> regenerateInsights(Map<String, Object> payload) {
+
+    List<Map<String, Object>> categories =
+            (List<Map<String, Object>>) payload.get("categories");
+
+    if (categories == null || categories.isEmpty()) {
+        throw new IllegalArgumentException("No categories provided.");
+    }
+
+    BigDecimal grossSpend = BigDecimal.ZERO;
+    BigDecimal refundsTotal = BigDecimal.ZERO;
+
+    List<Map<String, Object>> rebuiltCategories = new ArrayList<>();
+
+    for (Map<String, Object> cat : categories) {
+
+        String categoryName = String.valueOf(cat.get("category"));
+        List<Map<String, Object>> merchants =
+                (List<Map<String, Object>>) cat.get("merchants");
+
+        BigDecimal categoryTotal = BigDecimal.ZERO;
+
+        if (merchants != null) {
+            for (Map<String, Object> m : merchants) {
+                BigDecimal amt = new BigDecimal(String.valueOf(m.get("amount")));
+                categoryTotal = categoryTotal.add(amt);
+                grossSpend = grossSpend.add(amt);
+            }
+        }
+
+        Map<String, Object> rebuilt = new HashMap<>();
+        rebuilt.put("category", categoryName);
+        rebuilt.put("total", categoryTotal);
+        rebuilt.put("merchants", merchants);
+
+        rebuiltCategories.add(rebuilt);
+    }
+
+    Map<String, Object> aiOut = new HashMap<>();
+    aiOut.put("categories", rebuiltCategories);
+    aiOut.put("grossSpend", grossSpend);
+    aiOut.put("refundsTotal", refundsTotal);
+    aiOut.put("totalExpenses", grossSpend.subtract(refundsTotal));
+
+    Map<String, Object> insights =
+            insightsService.generateInsights(aiOut);
+
+    aiOut.put("insights", insights);
+
+    return aiOut;
+}
     // ---------------- Helpers ----------------
 
     private Map<Integer, Item> buildIdToItem(List<Map<String, Object>> items) {
@@ -228,6 +279,7 @@ public class TransactionsService {
         return s.contains("payroll")
                 || s.contains("salary")
                 || s.contains("direct deposit")
+				|| s.contains("direct dep") 
                 || s.contains("paycheck")
                 || s.contains("ach credit")
                 || s.contains("employer");
