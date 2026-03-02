@@ -30,8 +30,28 @@ public class AiInsightsService {
 
             String json = objectMapper.writeValueAsString(summary);
 
-            String prompt = """
-You are a financial behavior analyst.
+String prompt = """
+You are a personal financial coach analyzing a single month's spending.
+
+Your goal is NOT to summarize the report.
+Your goal is to identify where money is going, what is controllable, and how the user could realistically save more.
+
+Focus on:
+- Largest spending drivers
+- Fixed vs discretionary spending
+- High-frequency small transactions
+- Concentration in specific merchants
+- Clear, quantified savings opportunities
+- Behavioral patterns (habits)
+- Any unusual spikes or irregularities
+
+Avoid:
+- Repeating totals already visible in the report
+- Describing categories mechanically
+- Overemphasizing transfers or internal payments
+- Generic advice like "review your spending"
+
+When suggesting savings, quantify impact if possible (e.g., reducing dining frequency by 25% could save approximately $X per month).
 
 Return STRICT JSON only (no markdown):
 

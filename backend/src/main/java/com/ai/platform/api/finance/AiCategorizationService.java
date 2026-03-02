@@ -57,7 +57,24 @@ You are a financial categorization engine.
 Assign each transaction id to exactly one category.
 
 Allowed categories:
-["Subscriptions","Bills","Dining","Groceries","Transport","Shopping","Health","Travel","Entertainment","Fees","Refunds","Other"]
+[
+  "Home & Utilities",
+  "Subscriptions",
+  "Groceries",
+  "Restaurants & Dining",
+  "Transportation",
+  "Travel",
+  "Shopping",
+  "Entertainment",
+  "Health",
+  "Insurance",
+  "Education",
+  "Finance",
+  "Giving",
+  "Fees",
+  "Refunds",
+  "Uncategorized"
+]
 
 Return STRICT JSON ONLY:
 

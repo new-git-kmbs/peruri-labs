@@ -63,10 +63,12 @@ public class TransactionsService {
 
         BigDecimal billPaymentsTotal = BigDecimal.ZERO;
         BigDecimal payrollTotal = BigDecimal.ZERO;
+		BigDecimal transfersTotal = BigDecimal.ZERO;
+		BigDecimal investmentsTotal = BigDecimal.ZERO;
+		int billPaymentCount = 0;
 
         List<Txn> txnsAll = csvParser.parseCsv(files);
         List<Txn> txns = filterTxnsToMonth(txnsAll, monthKey);
-
         LocalDate minDate = null;
         LocalDate maxDate = null;
 
@@ -77,15 +79,31 @@ public class TransactionsService {
 
             String desc = t.description();
             BigDecimal amt = t.amount();
-
+			
             if (amt == null || amt.compareTo(BigDecimal.ZERO) == 0) continue;
 
             if (amt.compareTo(BigDecimal.ZERO) > 0 && isPayroll(desc)) {
                 payrollTotal = payrollTotal.add(amt);
                 continue;
             }
-
+			if (isTransfer(desc)) {
+				transfersTotal = transfersTotal.add(amt.abs());
+				continue;
+			}
+			if (isInvestment(desc)) {
+				investmentsTotal = investmentsTotal.add(amt.abs());
+				continue;
+			}
             if (isPayment(desc)) {
+				billPaymentCount++;
+				///////// Debug start
+			/*	System.out.println("==== BILL PAYMENT MATCH ====");
+    System.out.println("Date: " + t.date());
+    System.out.println("Description: " + desc);
+    System.out.println("Raw Amount: " + amt);
+    System.out.println("Abs Added To Total: " + amt.abs());
+    System.out.println("============================");*/
+				//////// Debug end
                 billPaymentsTotal = billPaymentsTotal.add(amt.abs());
                 continue;
             }
@@ -107,11 +125,32 @@ public class TransactionsService {
 
             if (items.size() >= MAX_TOTAL_ITEMS) break;
         }
-
+/////// Debug start
+/*System.out.println("######## BILL PAYMENT FINAL TOTAL ########");
+System.out.println("Bill payment transactions counted: " + billPaymentCount);
+System.out.println("billPaymentsTotal = " + billPaymentsTotal);
+System.out.println("##########################################");*/
+////// Debug end
         if (items.isEmpty()) {
             throw new IllegalArgumentException("No usable transactions found.");
         }
+/////////////////////Debug Start
+/*System.out.println("==== ITEMS BEING SENT TO AI FOR CATEGORIZATION ====");
 
+for (Map<String, Object> item : items) {
+    System.out.println(
+        "ID: " + item.get("id") +
+        " | Date: " + item.get("date") +
+        " | Merchant: " + item.get("merchant") +
+        " | Amount: " + item.get("amount") +
+        " | Kind: " + item.get("kind")
+    );
+}
+
+System.out.println("Total items sent to AI: " + items.size());
+System.out.println("==== END OF ITEMS SENT TO AI ====");*/
+
+////////////////////Debug End
         // ✅ Real AI categorization restored
         Map<Integer, String> txnIdToCategory =
                 categorizationService.categorize(items);
@@ -178,6 +217,8 @@ public class TransactionsService {
         );
 
         BigDecimal netSpend = grossSpend.subtract(refundsTotal);
+		BigDecimal netCashFlow = payrollTotal.subtract(netSpend);
+		
 
         Map<String, Object> aiOut = new HashMap<>();
         aiOut.put("categories", categoriesOut);
@@ -186,7 +227,9 @@ public class TransactionsService {
         aiOut.put("refundsTotal", refundsTotal);
         aiOut.put("billPaymentsTotal", billPaymentsTotal);
         aiOut.put("payrollTotal", payrollTotal);
-
+		aiOut.put("netCashFlow", netCashFlow);
+		aiOut.put("investmentsTotal", investmentsTotal);
+		aiOut.put("transfersTotal", transfersTotal);
         // ✅ Real AI insights restored
         Map<String, Object> insights =
                 insightsService.generateInsights(aiOut);
@@ -211,8 +254,13 @@ public Map<String, Object> regenerateInsights(Map<String, Object> payload) {
         throw new IllegalArgumentException("No categories provided.");
     }
 
+    BigDecimal payrollTotal = new BigDecimal(
+            String.valueOf(payload.getOrDefault("payrollTotal", "0"))
+    );
+
     BigDecimal grossSpend = BigDecimal.ZERO;
     BigDecimal refundsTotal = BigDecimal.ZERO;
+    BigDecimal investmentsTotal = BigDecimal.ZERO;
 
     List<Map<String, Object>> rebuiltCategories = new ArrayList<>();
 
@@ -228,9 +276,16 @@ public Map<String, Object> regenerateInsights(Map<String, Object> payload) {
             for (Map<String, Object> m : merchants) {
                 BigDecimal amt = new BigDecimal(String.valueOf(m.get("amount")));
                 categoryTotal = categoryTotal.add(amt);
-                grossSpend = grossSpend.add(amt);
             }
         }
+
+        // 🚀 Investments excluded from spending
+        if ("Investments".equalsIgnoreCase(categoryName)) {
+            investmentsTotal = investmentsTotal.add(categoryTotal);
+            continue;
+        }
+
+        grossSpend = grossSpend.add(categoryTotal);
 
         Map<String, Object> rebuilt = new HashMap<>();
         rebuilt.put("category", categoryName);
@@ -240,18 +295,29 @@ public Map<String, Object> regenerateInsights(Map<String, Object> payload) {
         rebuiltCategories.add(rebuilt);
     }
 
+    BigDecimal totalExpenses = grossSpend.subtract(refundsTotal);
+    BigDecimal netCashFlow = payrollTotal.subtract(totalExpenses);
+	BigDecimal transfersTotal = new BigDecimal(String.valueOf(payload.getOrDefault("transfersTotal", "0")));
+
     Map<String, Object> aiOut = new HashMap<>();
     aiOut.put("categories", rebuiltCategories);
     aiOut.put("grossSpend", grossSpend);
     aiOut.put("refundsTotal", refundsTotal);
-    aiOut.put("totalExpenses", grossSpend.subtract(refundsTotal));
+    aiOut.put("totalExpenses", totalExpenses);
+    aiOut.put("investmentsTotal", investmentsTotal);
+	aiOut.put("transfersTotal", transfersTotal);
+    aiOut.put("payrollTotal", payrollTotal);
+    aiOut.put("netCashFlow", netCashFlow);
 
     Map<String, Object> insights =
             insightsService.generateInsights(aiOut);
 
     aiOut.put("insights", insights);
 
-    return aiOut;
+    Map<String, Object> result = new HashMap<>();
+result.put("ok", true);
+result.put("ai", aiOut);
+return result;
 }
     // ---------------- Helpers ----------------
 
@@ -267,11 +333,17 @@ public Map<String, Object> regenerateInsights(Map<String, Object> payload) {
         return out;
     }
 
-    private boolean isPayment(String desc) {
-        if (desc == null) return false;
-        String s = desc.toLowerCase(Locale.ROOT);
-        return s.contains("payment") || s.contains("thank you") || s.contains("autopay");
-    }
+private boolean isPayment(String desc) {
+    if (desc == null) return false;
+    String s = desc.toLowerCase(Locale.ROOT);
+
+    return s.contains("credit card payment")
+        || s.contains("payment - thank you")
+        || s.contains("online banking transfer")
+        || s.contains("transfer to")
+        || s.contains("transfer from")
+        || s.contains("thank you for your payment");
+}
 
     private boolean isPayroll(String desc) {
         if (desc == null) return false;
@@ -284,7 +356,48 @@ public Map<String, Object> regenerateInsights(Map<String, Object> payload) {
                 || s.contains("ach credit")
                 || s.contains("employer");
     }
+private boolean isTransfer(String desc) {
+    if (desc == null) return false;
+    String s = desc.toLowerCase(Locale.ROOT);
 
+    // explicit transfers
+    if (s.contains("transfer to") || s.contains("transfer from")) return true;
+    if (s.contains("online banking transfer")) return true;
+
+    // generic card settlement signals
+    if (s.contains("credit card")) return true;
+    if (s.contains("card payment")) return true;
+    if (s.contains("cc payment")) return true;
+    if (s.contains("payment - thank you")) return true;
+    if (s.contains("autopay") && s.contains("card")) return true;
+    // ACH PMT to known card issuers (covers AMEX case)
+    if (s.contains("ach pmt") &&
+        (s.contains("express") || 
+         s.contains("amex") || 
+         s.contains("chase") || 
+         s.contains("citi") || 
+         s.contains("capital one") ||
+         s.contains("discover"))) {
+        return true;
+    }
+
+    return false;
+}
+private boolean isInvestment(String desc) {
+    if (desc == null) return false;
+    String s = desc.toLowerCase(Locale.ROOT);
+
+    if (s.contains("vanguard")) return true;
+    if (s.contains("fidelity")) return true;
+    if (s.contains("robinhood")) return true;
+    if (s.contains("schwab")) return true;
+    if (s.contains("brokerage")) return true;
+    if (s.contains("ira")) return true;
+    if (s.contains("401k")) return true;
+    if (s.contains("trader funding")) return true;
+
+    return false;
+}
     private String buildFilenameLabel(List<MultipartFile> files) {
         if (files == null || files.isEmpty()) return "";
         List<String> names = files.stream()

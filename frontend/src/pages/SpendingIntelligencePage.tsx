@@ -60,8 +60,17 @@ export default function SpendingIntelligencePage() {
 
   // 🔹 Local categories (mutable)
   const [localCategories, setLocalCategories] = useState<AiCategory[]>([]);
+  const [systemBuckets, setSystemBuckets] = useState<{
+  Investments: AiMerchant[];
+  Transfers: AiMerchant[];
+  Excluded: AiMerchant[];
+}>({
+  Investments: [],
+  Transfers: [],
+  Excluded: [],
+});
 
-  useEffect(() => {
+useEffect(() => {
   if (result?.ai?.categories && localCategories.length === 0) {
     setLocalCategories(result.ai.categories);
   }
@@ -349,7 +358,26 @@ if (target) {
     return updated;
   });
 }
+function moveToSystemBucket(bucketName: string, merchant: AiMerchant) {
+  setSystemBuckets((prev) => ({
+    ...prev,
+    [bucketName]: [...(prev as any)[bucketName], merchant],
+  }));
 
+  // remove from spending categories
+  setLocalCategories((prev) =>
+    prev.map((c) => ({
+      ...c,
+      merchants: c.merchants.filter(
+  (m) =>
+    !(m.merchant === merchant.merchant && m.amount === merchant.amount)
+),
+    }))
+  );
+}
+function sum(arr: AiMerchant[]) {
+  return arr.reduce((s, m) => s + Number(m.amount), 0);
+}
   return (
     <div
       style={{
@@ -548,16 +576,36 @@ if (target) {
       ) : (
         <div style={{ marginTop: 6 }}>
           {/* Top stats */}
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <Stat label="Transactions Used" value={result!.transactionCount} />
-
-            <Stat label="Total Expenses" value={Number(result!.ai.totalExpenses)} money />
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>          
+            
 			{typeof result!.ai.payrollTotal === "number" && (
 				<Stat label="Payroll" value={Number(result!.ai.payrollTotal)} money />
 			)}
-            {typeof result!.ai.billPaymentsTotal === "number" && (
-              <Stat label="Bill Payment" value={Number(result!.ai.billPaymentsTotal)} money />
-            )}
+			<Stat label="Total Expenses" value={Number(result!.ai.totalExpenses)} money />
+{systemBuckets.Investments.length > 0 && (
+  <Stat
+    label="Investments"
+    value={sum(systemBuckets.Investments)}
+    money
+  />
+)}
+
+{systemBuckets.Transfers.length > 0 && (
+  <Stat
+    label="Transfers"
+    value={sum(systemBuckets.Transfers)}
+    money
+  />
+)}
+			{result?.ai?.netCashFlow != null && (
+				<Stat
+					label="Net Cash Flow"
+					value={Number(result.ai.netCashFlow)}
+					money
+					highlight
+				/>
+			)}
+			<Stat label="Transactions Used" value={result!.transactionCount} />
           </div>
 
           {/* Categories */}
@@ -600,36 +648,42 @@ if (target) {
       <td style={td}>
 <select
   value={c.category}
-  onChange={(e) => {
-    const selected = e.target.value;
+ onChange={(e) => {
+  const selected = e.target.value;
 
-    if (selected === "__new__") {
-      const name = prompt("Enter new category name:");
-      if (!name) return;
+  // 🔥 Handle Investments first
+  if (selected === "__investments__") {
+    moveToSystemBucket("Investments", m);
+    return;
+  }
 
-      const cleaned = name.trim();
-      if (!cleaned) return;
+  if (selected === "__new__") {
+    const name = prompt("Enter new category name:");
+    if (!name) return;
 
-      moveMerchant(
-        c.category,
-        m.merchant,
-        cleaned
-      );
-    } else {
-      moveMerchant(
-        c.category,
-        m.merchant,
-        selected
-      );
-    }
-  }}
+    const cleaned = name.trim();
+    if (!cleaned) return;
+
+    moveMerchant(
+      c.category,
+      m.merchant,
+      cleaned
+    );
+  } else {
+    moveMerchant(
+      c.category,
+      m.merchant,
+      selected
+    );
+  }
+}}
 >
   {localCategories.map((opt) => (
     <option key={opt.category} value={opt.category}>
       {opt.category}
     </option>
   ))}
-
+<option value="__investments__">Move to Investments</option>
   <option value="__new__">+ Create New Category</option>
 </select>
       </td>
@@ -744,11 +798,15 @@ function Stat({
   label,
   value,
   money,
+  highlight,
 }: {
   label: string;
   value: number;
   money?: boolean;
+  highlight?: boolean;
 }) {
+  const isNegative = highlight && value < 0;
+
   return (
     <div
       style={{
@@ -759,7 +817,17 @@ function Stat({
       }}
     >
       <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 900 }}>
+      <div
+        style={{
+          fontSize: 20,
+          fontWeight: 900,
+          color: highlight
+            ? isNegative
+              ? "crimson"
+              : "green"
+            : "inherit",
+        }}
+      >
         {money ? fmtMoney(value) : value}
       </div>
     </div>
@@ -814,3 +882,4 @@ function formatMonthLabel(monthKey: string) {
   const dt = new Date(y, m - 1, 1);
   return dt.toLocaleString("en-US", { month: "short", year: "numeric" });
 }
+
