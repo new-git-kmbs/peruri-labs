@@ -25,7 +25,8 @@ type AiInsights = {
 type AiResult = {
   totalExpenses: number;
   billPaymentsTotal?: number;
-  payrollTotal?: number; // NEW
+  payrollTotal?: number;
+  netCashFlow?: number;   // 👈 ADD THIS
   categories: AiCategory[];
   notes?: string;
   insights?: AiInsights;
